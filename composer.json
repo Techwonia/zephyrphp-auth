@@ -1,0 +1,22 @@
+{
+    "name": "zephyrphp/auth",
+    "description": "Authentication module for ZephyrPHP - Session and JWT authentication",
+    "type": "library",
+    "license": "MIT",
+    "require": {
+        "php": "^8.1",
+        "zephyrphp/framework": "^0.1|^0.2|^0.3|^1.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "ZephyrPHP\\Auth\\": "src/"
+        }
+    },
+    "extra": {
+        "zephyr": {
+            "module": "auth",
+            "config": "config/auth.php",
+            "dependencies": ["session"]
+        }
+    }
+}
