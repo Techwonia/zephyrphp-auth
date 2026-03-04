@@ -149,7 +149,7 @@ class Auth
 
         // Clear session
         $session = Session::getInstance();
-        $session->forget(self::$config['session_key']);
+        $session->remove(self::$config['session_key']);
         $session->regenerate();
 
         // Clear state
