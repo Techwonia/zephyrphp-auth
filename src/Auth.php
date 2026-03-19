@@ -51,6 +51,8 @@ class Auth
         'session_key' => 'auth_user_id',
         'remember_key' => 'auth_remember_token',
         'remember_duration' => 2592000, // 30 days
+        'max_attempts' => 5,
+        'decay_seconds' => 60,
     ];
 
     /**
@@ -62,6 +64,13 @@ class Auth
      */
     public static function attempt(array $credentials, bool $remember = false): bool
     {
+        // Rate limiting
+        $key = 'auth_attempt:' . md5($credentials['email'] ?? $credentials['username'] ?? '');
+        if (self::isRateLimited($key)) {
+            return false;
+        }
+        self::recordAttempt($key);
+
         $provider = self::getProvider();
 
         // Extract password from credentials
@@ -79,6 +88,9 @@ class Auth
         if (!$provider->validateCredentials($user, ['password' => $password])) {
             return false;
         }
+
+        // Clear rate limit on successful login
+        self::clearAttempts($key);
 
         // Log the user in
         self::login($user, $remember);
@@ -255,20 +267,23 @@ class Auth
      */
     public static function once(array $credentials): bool
     {
-        if (self::validate($credentials)) {
-            $provider = self::getProvider();
-            $password = $credentials['password'] ?? '';
-            unset($credentials['password']);
+        $provider = self::getProvider();
 
-            $user = $provider->retrieveByCredentials($credentials);
+        $password = $credentials['password'] ?? '';
+        unset($credentials['password']);
 
-            if ($user !== null) {
-                self::setUser($user);
-                return true;
-            }
+        $user = $provider->retrieveByCredentials($credentials);
+
+        if ($user === null) {
+            return false;
         }
 
-        return false;
+        if (!$provider->validateCredentials($user, ['password' => $password])) {
+            return false;
+        }
+
+        self::setUser($user);
+        return true;
     }
 
     /**
@@ -364,12 +379,17 @@ class Auth
     {
         $token = Hash::randomToken(60);
 
-        // Store token in user (they should save it)
-        $user->setRememberToken($token);
+        // Store the hashed token in the database (not the raw token)
+        $provider = self::getProvider();
+        if (method_exists($provider, 'updateRememberToken')) {
+            $provider->updateRememberToken($user, hash('sha256', $token));
+        } else {
+            $user->setRememberToken(hash('sha256', $token));
+        }
 
-        // Set cookie
+        // Set cookie with the raw token (will be hashed on retrieval for comparison)
         $expires = time() + self::$config['remember_duration'];
-        $secure = ($_ENV['SESSION_SECURE'] ?? false) || self::isHttps();
+        $secure = filter_var($_ENV['SESSION_SECURE'] ?? false, FILTER_VALIDATE_BOOLEAN) || self::isHttps();
 
         setcookie(
             self::$config['remember_key'],
@@ -391,13 +411,16 @@ class Auth
     {
         $user->setRememberToken('');
 
-        // Clear cookie
+        // Clear cookie with secure flags matching setRememberToken()
+        $secure = filter_var($_ENV['SESSION_SECURE'] ?? false, FILTER_VALIDATE_BOOLEAN) || self::isHttps();
+
         setcookie(
             self::$config['remember_key'],
             '',
             [
                 'expires' => time() - 3600,
                 'path' => '/',
+                'secure' => $secure,
                 'httponly' => true,
                 'samesite' => 'Lax',
             ]
@@ -422,7 +445,9 @@ class Auth
 
         [$id, $token] = $parts;
 
-        $user = self::getProvider()->retrieveByToken($id, $token);
+        // Hash the raw cookie token to compare with the hashed value in the database
+        $hashedToken = hash('sha256', $token);
+        $user = self::getProvider()->retrieveByToken($id, $hashedToken);
 
         return $user;
     }
@@ -447,12 +472,150 @@ class Auth
     }
 
     /**
-     * Reset auth state (for testing)
+     * Get the file path for rate limit data for a given key
+     */
+    private static function getRateLimitFile(string $key): string
+    {
+        $dir = self::getStorageDir('rate_limits');
+        return $dir . '/' . hash('sha256', $key) . '.json';
+    }
+
+    /**
+     * Get a project-local storage directory (avoids shared /tmp on shared hosting)
+     */
+    private static function getStorageDir(string $subdir): string
+    {
+        $dir = dirname(__DIR__, 2) . '/storage/' . $subdir;
+        if (!is_dir($dir)) {
+            @mkdir($dir, 0700, true);
+        }
+        return $dir;
+    }
+
+    /**
+     * Check if the given key is rate limited
+     */
+    private static function isRateLimited(string $key): bool
+    {
+        $file = self::getRateLimitFile($key);
+
+        if (!file_exists($file)) {
+            return false;
+        }
+
+        $maxAttempts = self::$config['max_attempts'] ?? 5;
+        $decaySeconds = self::$config['decay_seconds'] ?? 60;
+        $cutoff = time() - $decaySeconds;
+
+        // Use flock to prevent TOCTOU race conditions
+        $fp = @fopen($file, 'c+');
+        if ($fp === false) {
+            return false;
+        }
+        flock($fp, LOCK_EX);
+
+        $content = stream_get_contents($fp);
+        $data = @json_decode($content ?: '[]', true);
+        if (!is_array($data)) {
+            $data = [];
+        }
+
+        // Filter out expired attempts
+        $attempts = array_filter(
+            $data,
+            fn(int $timestamp) => $timestamp >= $cutoff
+        );
+
+        // Write back filtered attempts
+        ftruncate($fp, 0);
+        rewind($fp);
+        fwrite($fp, json_encode(array_values($attempts)));
+        flock($fp, LOCK_UN);
+        fclose($fp);
+
+        // Probabilistic GC: 1-in-50 chance to clean up stale files
+        if (random_int(1, 50) === 1) {
+            self::gcRateLimitFiles();
+        }
+
+        return count($attempts) >= $maxAttempts;
+    }
+
+    /**
+     * Record a login attempt
+     */
+    private static function recordAttempt(string $key): void
+    {
+        $file = self::getRateLimitFile($key);
+
+        $fp = @fopen($file, 'c+');
+        if ($fp === false) {
+            return;
+        }
+        flock($fp, LOCK_EX);
+
+        $content = stream_get_contents($fp);
+        $attempts = @json_decode($content ?: '[]', true);
+        if (!is_array($attempts)) {
+            $attempts = [];
+        }
+
+        $attempts[] = time();
+
+        ftruncate($fp, 0);
+        rewind($fp);
+        fwrite($fp, json_encode($attempts));
+        flock($fp, LOCK_UN);
+        fclose($fp);
+    }
+
+    /**
+     * Clear login attempts for a key
+     */
+    private static function clearAttempts(string $key): void
+    {
+        $file = self::getRateLimitFile($key);
+        if (file_exists($file)) {
+            @unlink($file);
+        }
+    }
+
+    /**
+     * Garbage collect stale rate limit files (older than 1 hour)
+     */
+    private static function gcRateLimitFiles(): void
+    {
+        $dir = self::getStorageDir('rate_limits');
+        $cutoff = time() - 3600;
+
+        foreach (glob($dir . '/*.json') as $file) {
+            if (filemtime($file) < $cutoff) {
+                @unlink($file);
+            }
+        }
+    }
+
+    /**
+     * Reset all static state.
+     *
+     * Must be called between requests in long-running processes (e.g. Swoole,
+     * RoadRunner, ReactPHP) to prevent authentication state from leaking
+     * between different requests.
      */
     public static function reset(): void
     {
+        self::$instance = null;
         self::$user = null;
         self::$resolved = false;
         self::$currentGuard = 'web';
+        self::$guards = [];
+        self::$providers = [];
+        self::$config = [
+            'session_key' => 'auth_user_id',
+            'remember_key' => 'auth_remember_token',
+            'remember_duration' => 2592000,
+            'max_attempts' => 5,
+            'decay_seconds' => 60,
+        ];
     }
 }

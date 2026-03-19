@@ -92,7 +92,11 @@ class DatabaseUserProvider implements UserProviderInterface
 
         // Save the user if they have a save method
         if (method_exists($user, 'save')) {
-            $user->save();
+            $result = $user->save();
+
+            if ($result === false) {
+                throw new \RuntimeException('Failed to persist remember token for user.');
+            }
         }
     }
 
@@ -111,6 +115,9 @@ class DatabaseUserProvider implements UserProviderInterface
 
         $model = $this->model;
 
+        // Whitelist of allowed credential keys to prevent injection via arbitrary column names
+        $allowedKeys = ['email', 'username', 'phone', 'name'];
+
         // Try using query builder if available
         if (method_exists($model, 'query')) {
             $query = $model::query();
@@ -118,6 +125,11 @@ class DatabaseUserProvider implements UserProviderInterface
             foreach ($credentials as $key => $value) {
                 // Skip password - it's validated separately
                 if ($key === 'password') {
+                    continue;
+                }
+
+                // Only allow whitelisted keys as query columns
+                if (!in_array($key, $allowedKeys, true)) {
                     continue;
                 }
 
@@ -130,8 +142,16 @@ class DatabaseUserProvider implements UserProviderInterface
 
         // Fallback to findOneBy
         if (method_exists($model, 'findOneBy')) {
-            unset($credentials['password']);
-            $user = $model::findOneBy($credentials);
+            $filtered = [];
+            foreach ($credentials as $key => $value) {
+                if ($key === 'password') {
+                    continue;
+                }
+                if (in_array($key, $allowedKeys, true)) {
+                    $filtered[$key] = $value;
+                }
+            }
+            $user = $model::findOneBy($filtered);
             return $user instanceof AuthenticatableInterface ? $user : null;
         }
 

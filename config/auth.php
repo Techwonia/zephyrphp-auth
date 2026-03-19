@@ -122,7 +122,7 @@ return [
     |
     */
     'jwt' => [
-        'secret' => env('JWT_SECRET', ''),
+        'secret' => env('JWT_SECRET'),
         'algorithm' => env('JWT_ALGORITHM', 'HS256'),
         'lifetime' => env('JWT_LIFETIME', 3600),           // Access token: 1 hour
         'refresh_lifetime' => env('JWT_REFRESH', 2592000), // Refresh token: 30 days

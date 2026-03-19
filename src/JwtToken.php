@@ -41,6 +41,12 @@ class JwtToken
     /** @var string Token audience */
     private static string $audience = '';
 
+    /** @var array In-memory token blacklist (jti => true) */
+    private static array $blacklist = [];
+
+    /** @var object|null External blacklist store (cache/store interface) */
+    private static ?object $blacklistStore = null;
+
     /** @var string Algorithm */
     private const ALGORITHM = 'HS256';
 
@@ -129,14 +135,15 @@ class JwtToken
 
         // Validate claims
         $now = time();
+        $leeway = min((int) ($_ENV['JWT_LEEWAY'] ?? 60), 300);
 
-        // Check expiration
-        if (isset($payload['exp']) && $payload['exp'] < $now) {
+        // Check expiration (with leeway)
+        if (isset($payload['exp']) && $payload['exp'] < ($now - $leeway)) {
             return null;
         }
 
-        // Check not before
-        if (isset($payload['nbf']) && $payload['nbf'] > $now) {
+        // Check not before (with leeway)
+        if (isset($payload['nbf']) && $payload['nbf'] > ($now + $leeway)) {
             return null;
         }
 
@@ -157,6 +164,11 @@ class JwtToken
             }
         }
 
+        // Check if token has been revoked
+        if (isset($payload['jti']) && self::isRevoked($payload['jti'])) {
+            return null;
+        }
+
         return $payload;
     }
 
@@ -172,12 +184,15 @@ class JwtToken
     }
 
     /**
-     * Get payload without validation (for debugging)
+     * Get payload without signature verification
+     *
+     * WARNING: This returns unverified data. Never trust the output
+     * for authentication or authorization decisions.
      *
      * @param string $token The JWT token
      * @return array|null The payload (unverified!)
      */
-    public static function decode(string $token): ?array
+    private static function decodeWithoutVerification(string $token): ?array
     {
         $parts = explode('.', $token);
 
@@ -200,6 +215,11 @@ class JwtToken
         $payload = self::validate($token);
 
         if ($payload === null) {
+            return null;
+        }
+
+        // Only refresh tokens can be used for refreshing
+        if (($payload['type'] ?? '') !== 'refresh') {
             return null;
         }
 
@@ -241,7 +261,7 @@ class JwtToken
      */
     public static function expiresIn(string $token): int
     {
-        $payload = self::decode($token);
+        $payload = self::validate($token);
 
         if ($payload === null || !isset($payload['exp'])) {
             return 0;
@@ -376,10 +396,10 @@ class JwtToken
      */
     private static function getSecret(): string
     {
-        $secret = self::$secret ?: ($_ENV['JWT_SECRET'] ?? $_ENV['APP_KEY'] ?? '');
+        $secret = self::$secret ?: ($_ENV['JWT_SECRET'] ?? '');
 
         if (empty($secret)) {
-            throw new \RuntimeException('JWT secret not configured');
+            throw new \RuntimeException('JWT_SECRET must be configured.');
         }
 
         return $secret;
@@ -415,6 +435,121 @@ class JwtToken
     }
 
     /**
+     * Set an external blacklist store (cache/store interface)
+     *
+     * The store must implement `set(string $key, mixed $value, int $ttl): void`
+     * and `has(string $key): bool` methods.
+     *
+     * @param object $store A cache/store object
+     */
+    public static function setBlacklistStore(object $store): void
+    {
+        self::$blacklistStore = $store;
+    }
+
+    /**
+     * Revoke a token by adding its jti to the blacklist
+     *
+     * @param string $token The JWT token to revoke
+     */
+    public static function revoke(string $token): void
+    {
+        $payload = self::validate($token);
+
+        if ($payload === null || !isset($payload['jti'])) {
+            return;
+        }
+
+        $jti = $payload['jti'];
+        $exp = $payload['exp'] ?? (time() + 86400);
+        self::$blacklist[$jti] = true;
+
+        // Store in external store if available
+        if (self::$blacklistStore !== null && method_exists(self::$blacklistStore, 'set')) {
+            $ttl = max(0, $exp - time());
+            self::$blacklistStore->set('jwt_blacklist:' . $jti, true, $ttl);
+        } else {
+            // File-based persistence as default
+            self::fileBlacklistAdd($jti, $exp);
+        }
+    }
+
+    /**
+     * Check if a token jti has been revoked
+     *
+     * @param string $jti The JWT ID
+     * @return bool True if the token is revoked
+     */
+    private static function isRevoked(string $jti): bool
+    {
+        if (isset(self::$blacklist[$jti])) {
+            return true;
+        }
+
+        if (self::$blacklistStore !== null && method_exists(self::$blacklistStore, 'has')) {
+            return self::$blacklistStore->has('jwt_blacklist:' . $jti);
+        }
+
+        // File-based fallback
+        return self::fileBlacklistHas($jti);
+    }
+
+    /**
+     * Get the file path for the JWT blacklist
+     */
+    private static function getBlacklistFile(): string
+    {
+        $dir = dirname(__DIR__, 2) . '/storage/jwt_blacklist';
+        if (!is_dir($dir)) {
+            @mkdir($dir, 0700, true);
+        }
+        return $dir . '/blacklist.json';
+    }
+
+    /**
+     * Add a JTI to the file-based blacklist
+     */
+    private static function fileBlacklistAdd(string $jti, int $exp): void
+    {
+        $file = self::getBlacklistFile();
+        $entries = self::fileBlacklistLoad($file);
+        $entries[$jti] = $exp;
+        @file_put_contents($file, json_encode($entries), LOCK_EX);
+    }
+
+    /**
+     * Check if a JTI exists in the file-based blacklist
+     */
+    private static function fileBlacklistHas(string $jti): bool
+    {
+        $file = self::getBlacklistFile();
+        if (!file_exists($file)) {
+            return false;
+        }
+        $entries = self::fileBlacklistLoad($file);
+        return isset($entries[$jti]) && $entries[$jti] >= time();
+    }
+
+    /**
+     * Load and prune expired entries from the blacklist file
+     */
+    private static function fileBlacklistLoad(string $file): array
+    {
+        if (!file_exists($file)) {
+            return [];
+        }
+
+        $data = @json_decode((string) @file_get_contents($file), true);
+        if (!is_array($data)) {
+            return [];
+        }
+
+        // Prune expired entries
+        $now = time();
+        return array_filter($data, fn(int $exp) => $exp >= $now);
+    }
+
+    /**
      * Reset state (for testing)
      */
     public static function reset(): void
@@ -424,5 +559,7 @@ class JwtToken
         self::$refreshLifetime = 2592000;
         self::$issuer = '';
         self::$audience = '';
+        self::$blacklist = [];
+        self::$blacklistStore = null;
     }
 }

@@ -40,7 +40,11 @@ trait Authenticatable
      */
     public function getAuthPassword(): string
     {
-        return $this->password ?? '';
+        if (!isset($this->password) || $this->password === null) {
+            throw new \RuntimeException('Password property not set on authenticatable model.');
+        }
+
+        return $this->password;
     }
 
     /**
