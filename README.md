@@ -16,7 +16,7 @@ Authentication module for [ZephyrPHP](https://zephyrphp.com) — session and JWT
 composer require zephyrphp/auth
 ```
 
-> **Note:** This package is built for ZephyrPHP and is not compatible with Laravel or other PHP frameworks.
+> **Note:** This package is designed exclusively for ZephyrPHP and is not compatible with other PHP frameworks.
 
 ## License
 
