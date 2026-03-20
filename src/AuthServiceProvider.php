@@ -44,9 +44,39 @@ class AuthServiceProvider
 
         // Register default user provider
         $providerConfig = Config::get('auth.providers.users', []);
-        $model = $providerConfig['model'] ?? 'App\\Models\\User';
+        $model = $providerConfig['model'] ?? null;
+
+        // Auto-detect User model if not configured
+        if (!$model) {
+            $model = $this->detectUserModel();
+        }
 
         Auth::provider('web', new DatabaseUserProvider($model));
         Auth::provider('api', new DatabaseUserProvider($model));
+    }
+
+    /**
+     * Auto-detect the User model class by reading composer.json autoload PSR-4 mapping.
+     * If the user renamed their namespace (e.g. App → Mysite), this finds the correct class.
+     */
+    private function detectUserModel(): string
+    {
+        $basePath = defined('BASE_PATH') ? BASE_PATH : getcwd();
+        $composerFile = $basePath . '/composer.json';
+
+        if (file_exists($composerFile)) {
+            $composer = json_decode(file_get_contents($composerFile), true);
+            $psr4 = $composer['autoload']['psr-4'] ?? [];
+
+            foreach ($psr4 as $namespace => $path) {
+                // Check if Models/User.php exists under this namespace
+                $userFile = $basePath . '/' . rtrim($path, '/') . '/Models/User.php';
+                if (file_exists($userFile)) {
+                    return rtrim($namespace, '\\') . '\\Models\\User';
+                }
+            }
+        }
+
+        return 'App\\Models\\User';
     }
 }
