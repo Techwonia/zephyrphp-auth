@@ -77,6 +77,7 @@ class AuthServiceProvider
             }
         }
 
-        return 'App\\Models\\User';
+        // No model found via config or auto-detection
+        return '';
     }
 }

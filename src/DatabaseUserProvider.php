@@ -26,7 +26,7 @@ class DatabaseUserProvider implements UserProviderInterface
      * @param string $model The User model class (must implement AuthenticatableInterface)
      * @param string $table The table name (fallback)
      */
-    public function __construct(string $model = 'App\\Models\\User', string $table = 'users')
+    public function __construct(string $model = '', string $table = 'users')
     {
         $this->model = $model;
         $this->table = $table;
