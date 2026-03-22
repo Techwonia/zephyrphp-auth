@@ -184,26 +184,6 @@ class JwtToken
     }
 
     /**
-     * Get payload without signature verification
-     *
-     * WARNING: This returns unverified data. Never trust the output
-     * for authentication or authorization decisions.
-     *
-     * @param string $token The JWT token
-     * @return array|null The payload (unverified!)
-     */
-    private static function decodeWithoutVerification(string $token): ?array
-    {
-        $parts = explode('.', $token);
-
-        if (count($parts) !== 3) {
-            return null;
-        }
-
-        return json_decode(self::base64UrlDecode($parts[1]), true);
-    }
-
-    /**
      * Refresh a token (generate new token with same payload)
      *
      * @param string $token The old token

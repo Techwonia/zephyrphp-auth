@@ -28,9 +28,6 @@ use ZephyrPHP\Session\Session;
  */
 class Auth
 {
-    /** @var Auth|null Singleton instance */
-    private static ?Auth $instance = null;
-
     /** @var AuthenticatableInterface|null Current authenticated user */
     private static ?AuthenticatableInterface $user = null;
 
@@ -458,17 +455,8 @@ class Auth
     private static function isHttps(): bool
     {
         return (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
-            || ($_SERVER['SERVER_PORT'] ?? 80) == 443
+            || (int) ($_SERVER['SERVER_PORT'] ?? 80) === 443
             || (!empty($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https');
-    }
-
-    /**
-     * Fire an authentication event
-     */
-    private static function fireEvent(string $event, AuthenticatableInterface $user): void
-    {
-        // Event system integration point
-        // Can be extended to dispatch events
     }
 
     /**
@@ -604,7 +592,6 @@ class Auth
      */
     public static function reset(): void
     {
-        self::$instance = null;
         self::$user = null;
         self::$resolved = false;
         self::$currentGuard = 'web';
