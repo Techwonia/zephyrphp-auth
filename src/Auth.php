@@ -118,8 +118,6 @@ class Auth
             self::setRememberToken($user);
         }
 
-        // Fire login event (if event system exists)
-        self::fireEvent('login', $user);
     }
 
     /**
@@ -152,8 +150,6 @@ class Auth
             // Clear remember token
             self::clearRememberToken($user);
 
-            // Fire logout event
-            self::fireEvent('logout', $user);
         }
 
         // Clear session
