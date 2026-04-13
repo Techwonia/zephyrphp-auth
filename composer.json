@@ -10,7 +10,10 @@
     "autoload": {
         "psr-4": {
             "ZephyrPHP\\Auth\\": "src/"
-        }
+        },
+        "files": [
+            "src/helpers.php"
+        ]
     },
     "extra": {
         "zephyr": {

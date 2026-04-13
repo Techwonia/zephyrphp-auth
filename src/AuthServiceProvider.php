@@ -28,6 +28,10 @@ class AuthServiceProvider
 
     public function boot(): void
     {
+        // Ensure global helpers (auth_url, auth_url_prefix, auth_user_model) are loaded
+        // even if composer dump-autoload hasn't run.
+        require_once __DIR__ . '/helpers.php';
+
         // Configure Auth from config
         $authConfig = Config::get('auth', []);
 
@@ -53,6 +57,24 @@ class AuthServiceProvider
 
         Auth::provider('web', new DatabaseUserProvider($model));
         Auth::provider('api', new DatabaseUserProvider($model));
+
+        // Register Twig namespace "@auth" for shipped auth views
+        $view = \ZephyrPHP\View\View::getInstance();
+        $view->addNamespace('auth', __DIR__ . '/../views');
+
+        // Expose auth helpers to Twig templates
+        $view->addFunction('auth_url', function (string $path = '') {
+            return auth_url($path);
+        });
+        $view->addFunction('auth_url_prefix', function () {
+            return auth_url_prefix();
+        });
+
+        // Load auth routes
+        $routesFile = __DIR__ . '/../routes.php';
+        if (file_exists($routesFile)) {
+            require $routesFile;
+        }
     }
 
     /**

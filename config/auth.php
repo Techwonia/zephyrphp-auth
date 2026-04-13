@@ -24,6 +24,19 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Auth URL Prefix
+    |--------------------------------------------------------------------------
+    |
+    | Path prefix under which auth routes are registered. Default "/auth"
+    | produces URLs like /auth/login, /auth/forgot-password, /auth/logout.
+    | Override per-site via the AUTH_URL_PREFIX env var — e.g. "/account"
+    | for e-commerce contexts, or "" (empty) to expose /login at the root.
+    |
+    */
+    'url_prefix' => env('AUTH_URL_PREFIX', '/auth'),
+
+    /*
+    |--------------------------------------------------------------------------
     | Authentication Guards
     |--------------------------------------------------------------------------
     |
